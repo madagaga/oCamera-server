@@ -15,6 +15,13 @@ services:
     restart: unless-stopped
     ports:
       - "8883:8883"
+    networks:
+      default:
+        # Inside the compose network the public broker name resolves to this
+        # container, so the publisher validates the real TLS certificate without
+        # going through the host (and its firewall).
+        aliases:
+          - ${MQTT_HOST}
     volumes:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./mosquitto/config:/mosquitto/config/ocam # passwd + acl (created by init.sh)
@@ -65,10 +72,6 @@ services:
       MQTT_CAFILE: ${MQTT_CAFILE:-}
     volumes:
       - ./certs:/certs:ro
-    # The public name of the broker must resolve to this host so that the TLS
-    # certificate is validated like a real client would.
-    extra_hosts:
-      - "${MQTT_HOST}:host-gateway"
 
 volumes:
   mosquitto-data:
