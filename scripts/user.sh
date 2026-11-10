@@ -11,13 +11,14 @@
 #
 # `<name>` is the MQTT user name and the device / client id used in the topics.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+cd "$(dirname "$self")/.."
 
 action="${1:-}"
 name="${2:-}"
 role="${3:-}"
 
-usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1; }
+usage() { sed -n '2,13p' "$self" | sed 's/^# \{0,1\}//' >&2; exit 1; }
 
 [ -n "$action" ] && [ -n "$name" ] || usage
 [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "Invalid name (letters, digits, - and _ only)." >&2; exit 1; }
