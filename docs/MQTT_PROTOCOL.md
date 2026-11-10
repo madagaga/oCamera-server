@@ -1,101 +1,101 @@
-# Protocole de signalisation MQTT — version 1
+# MQTT Signaling Protocol — version 1
 
-Ce document remplace entièrement l'ancien protocole (conservé dans `MQTT_PROTOCOL_legacy.md`, sans
-version de compatibilité : l'ancien et le nouveau ne coexistent pas).
+This document fully replaces the old protocol (kept in `MQTT_PROTOCOL_legacy.md`, with no
+compatibility layer: the old and new protocols do not coexist).
 
-MQTT sert **uniquement à la signalisation** WebRTC (SDP, ICE), à la présence des appareils et à de
-petites commandes. La vidéo et l'audio passent en pair-à-pair via WebRTC, sans transiter par le broker.
+MQTT is used **only for WebRTC signaling** (SDP, ICE), device presence and small commands.
+Video and audio travel peer-to-peer over WebRTC, without going through the broker.
 
 ```
- Viewer (Flutter)            Broker Mosquitto              Caméra (agent Go / C, ou téléphone)
+ Viewer (Flutter)            Mosquitto broker              Camera (Go / C agent, or phone)
        |                           |                                |
        |-- SUBSCRIBE dev/+/state ->|<-- PUBLISH dev/{id}/state -----|  (retained + Last Will)
        |-- offer ----------------->|------------------------------->|
        |<------------------------------------------------ answer ---|
-       |<========================= WebRTC P2P (vidéo/audio) ========>|
+       |<========================= WebRTC P2P (video/audio) ========>|
 ```
 
-## 1. Hypothèses et périmètre
+## 1. Assumptions and scope
 
-- **MQTT 3.1.1**, TLS, authentification **login / mot de passe** (le certificat client est une
-  évolution prévue, voir annexe C).
-- **Un serveur MQTT = un cercle de confiance** : tout viewer peut appeler toute caméra du serveur.
-  Il n'y a pas de notion de locataire dans les topics.
-- **Broker Mosquitto avec ACL par rôle** (annexe A). Les garanties d'identité et de confinement
-  décrites ici **ne valent que si l'ACL est en place** (§ 9). Le protocole fonctionne sans, mais sans
-  garantie de sécurité.
-- **Horloge fiable (NTP)** sur tous les appareils.
-- Une seule session simultanée par caméra.
-- Hors périmètre : viewer web, plusieurs viewers simultanés, chiffrement applicatif des messages.
-- Serveurs STUN / TURN : **optionnels**. Sans aucune configuration, les clients utilisent un STUN public
-  sans identifiants (§ 5).
+- **MQTT 3.1.1**, TLS, **username / password** authentication (client certificates are a planned
+  evolution, see appendix C).
+- **One MQTT server = one circle of trust**: any viewer can call any camera on the server.
+  There is no notion of tenant in the topics.
+- **Mosquitto broker with per-role ACL** (appendix A). The identity and confinement guarantees
+  described here **only hold if the ACL is in place** (section 9). The protocol works without it, but
+  with no security guarantee.
+- **Reliable clock (NTP)** on all devices.
+- Only one simultaneous session per camera.
+- Out of scope: web viewer, multiple simultaneous viewers, application-level message encryption.
+- STUN / TURN servers: **optional**. With no configuration at all, clients use a public STUN
+  without credentials (section 5).
 
-## 2. Identités et rôles
+## 2. Identities and roles
 
-- L'**identifiant** d'un appareil est son **nom d'utilisateur MQTT**, et le `clientId` MQTT lui est
-  égal (`use_username_as_clientid true`). Un compte par appareil, un compte par utilisateur viewer.
-- Format : `[A-Za-z0-9_-]`, 3 à 32 caractères (jamais `/`, `+`, `#`). Exemples : `cam-entree`, `cli-alice`.
-- Deux rôles, définis par l'ACL du broker :
-  - **camera** : agent RTSP -> WebRTC, ou téléphone en mode caméra (il utilise alors un compte *caméra*,
-    distinct du compte viewer de l'utilisateur) ;
-  - **viewer** : application qui regarde les caméras.
-- L'identifiant n'est **jamais dérivé** d'une donnée sensible (plus de MD5 de l'URL RTSP).
+- A device's **identifier** is its **MQTT username**, and the MQTT `clientId` is equal to it
+  (`use_username_as_clientid true`). One account per device, one account per viewer user.
+- Format: `[A-Za-z0-9_-]`, 3 to 32 characters (never `/`, `+`, `#`). Examples: `cam-entree`, `cli-alice`.
+- Two roles, defined by the broker ACL:
+  - **camera**: RTSP -> WebRTC agent, or phone in camera mode (it then uses a *camera* account,
+    distinct from the user's viewer account);
+  - **viewer**: application that watches the cameras.
+- The identifier is **never derived** from sensitive data (no more MD5 of the RTSP URL).
 
 ## 3. Topics
 
-| Topic | Contenu | QoS | Retained | Écrit par |
+| Topic | Content | QoS | Retained | Written by |
 |---|---|---|---|---|
-| `ocam/dev/{devId}/state` | État de la caméra (§ 5) | 1 | **oui** (+ Last Will) | `devId` uniquement |
-| `ocam/dev/{devId}/in/{fromId}` | Messages **vers** une caméra | 1 | non | `fromId` (un viewer) |
-| `ocam/cli/{cliId}/in/{fromId}` | Messages **vers** un viewer | 1 | non | `fromId` (une caméra) |
-| `ocam/config/ice` | Configuration ICE (STUN / TURN), **optionnelle** (§ 5) | 1 | **oui** | `admin` uniquement |
+| `ocam/dev/{devId}/state` | Camera state (section 5) | 1 | **yes** (+ Last Will) | `devId` only |
+| `ocam/dev/{devId}/in/{fromId}` | Messages **to** a camera | 1 | no | `fromId` (a viewer) |
+| `ocam/cli/{cliId}/in/{fromId}` | Messages **to** a viewer | 1 | no | `fromId` (a camera) |
+| `ocam/config/ice` | ICE configuration (STUN / TURN), **optional** (section 5) | 1 | **yes** | `admin` only |
 
-- **L'expéditeur est le dernier niveau du topic** (`fromId`). Il n'y a pas de champ `from` dans le
-  payload : l'ACL garantit que `fromId` est le nom d'utilisateur de l'émetteur.
-- Abonnements :
-  - caméra : `ocam/dev/{self}/in/#` et `ocam/config/ice` (optionnel ; le téléphone caméra s'en sert pour son TURN)
-  - viewer : `ocam/dev/+/state`, `ocam/cli/{self}/in/#` et `ocam/config/ice` (optionnel)
-- Pas de topic de diffusion, pas de `query` : l'état retained de chaque caméra est reçu à l'abonnement.
+- **The sender is the last level of the topic** (`fromId`). There is no `from` field in the
+  payload: the ACL guarantees that `fromId` is the sender's username.
+- Subscriptions:
+  - camera: `ocam/dev/{self}/in/#` and `ocam/config/ice` (optional; the phone camera uses it for its TURN)
+  - viewer: `ocam/dev/+/state`, `ocam/cli/{self}/in/#` and `ocam/config/ice` (optional)
+- No broadcast topic, no `query`: each camera's retained state is received on subscription.
 
-### Paramètres de connexion
+### Connection parameters
 
-| Paramètre | Valeur |
+| Parameter | Value |
 |---|---|
 | Version | MQTT 3.1.1 |
-| CleanSession | `true` (agent et viewer) |
+| CleanSession | `true` (agent and viewer) |
 | KeepAlive | 30 s |
-| Reconnexion automatique | oui, avec ré-abonnement et republication de `state` |
-| TLS | oui, certificat du broker **validé** (pas d'`InsecureSkipVerify`) |
-| Last Will (caméra) | topic `state`, QoS 1, retained, payload = état avec `online:false, busy:false` |
-| Taille de payload max | 32 Ko ; une offre SDP fait 6 à 10 Ko, les tampons embarqués doivent faire **>= 16 Ko** |
+| Automatic reconnection | yes, with re-subscription and republication of `state` |
+| TLS | yes, broker certificate **validated** (no `InsecureSkipVerify`) |
+| Last Will (camera) | `state` topic, QoS 1, retained, payload = state with `online:false, busy:false` |
+| Max payload size | 32 KB; an SDP offer is 6 to 10 KB, embedded buffers must be **>= 16 KB** |
 
-## 4. Enveloppe des messages `in`
+## 4. Envelope of `in` messages
 
 ```json
 { "v": 1, "ts": 1760000000, "sid": "k3f9x2m1q8", "type": "offer", "data": { } }
 ```
 
-| Champ | Type | Description |
+| Field | Type | Description |
 |---|---|---|
-| `v` | entier | Version du protocole (`1`). Un message avec un `v` supérieur est ignoré. |
-| `ts` | entier | Secondes Unix UTC à l'émission. Le récepteur **ignore** les messages dont `|maintenant - ts| > 30 s`. |
-| `sid` | chaîne | Identifiant de session (8 à 32 caractères, aléatoire), **choisi par le viewer** à l'offre. Absent pour `cmd` / `res`. |
-| `type` | chaîne | `offer`, `answer`, `ice`, `bye`, `error`, `cmd`, `res` |
-| `data` | objet | Contenu spécifique au type |
+| `v` | integer | Protocol version (`1`). A message with a higher `v` is ignored. |
+| `ts` | integer | Unix seconds UTC at send time. The receiver **ignores** messages where `|now - ts| > 30 s`. |
+| `sid` | string | Session identifier (8 to 32 characters, random), **chosen by the viewer** at the offer. Absent for `cmd` / `res`. |
+| `type` | string | `offer`, `answer`, `ice`, `bye`, `error`, `cmd`, `res` |
+| `data` | object | Type-specific content |
 
-Règles générales :
-- Les champs inconnus et les types inconnus sont **ignorés** (journalisés), jamais source d'erreur.
-- JSON valide uniquement ; toute valeur textuelle doit être **échappée** par un vrai sérialiseur
-  (jamais de construction par concaténation).
-- Une caméra dont l'horloge n'est pas encore synchronisée (année < 2024) saute le contrôle de `ts`
-  jusqu'à la première synchronisation.
-- Un message ignoré pour cause de `ts` hors tolérance est signalé dans les journaux. Seule une
-  `offer` reçoit en retour une `error` (`stale`).
+General rules:
+- Unknown fields and unknown types are **ignored** (logged), never a source of error.
+- Valid JSON only; every text value must be **escaped** by a real serializer
+  (never built by concatenation).
+- A camera whose clock is not yet synchronized (year < 2024) skips the `ts` check
+  until the first synchronization.
+- A message ignored because `ts` is out of tolerance is reported in the logs. Only an
+  `offer` gets an `error` (`stale`) in return.
 
-## 5. État d'une caméra (`state`)
+## 5. Camera state (`state`)
 
-Publié à la connexion, à chaque changement, et envoyé automatiquement par le broker (Last Will)
-à la déconnexion. **Retained**.
+Published on connection, on every change, and sent automatically by the broker (Last Will)
+on disconnection. **Retained**.
 
 ```json
 {
@@ -116,37 +116,37 @@ Publié à la connexion, à chaque changement, et envoyé automatiquement par le
 }
 ```
 
-| Champ | Type | Description |
+| Field | Type | Description |
 |---|---|---|
-| `name` | chaîne (<= 64) | Nom affiché |
-| `online` | booléen | `false` dans le Last Will |
-| `busy` | booléen | Une session est active (remplace l'ancien `streaming`) |
-| `viewer` | chaîne ou `null` | Identifiant du viewer de la session en cours |
-| `kind` | chaîne | `relay` (agent RTSP) ou `phone` (téléphone caméra), indicatif |
-| `caps` | objet (optionnel) | Capacités : `video`, `audio` (codecs en minuscules), `streams`, `cmds`. Si absent, le viewer conserve les dernières capacités connues. |
-| `agent` | objet (optionnel) | Implémentation et version, indicatif |
-| `facing` | chaîne (optionnel) | Caméra utilisée par un téléphone pendant une session : `back` (arrière) ou `front` (avant). Absent hors session ou si la caméra ne le sait pas ; le viewer n'affiche rien dans ce cas. Republié après chaque `flip` réussi. |
-| `battery` | objet (optionnel) | Batterie d'un appareil qui en a une (téléphone caméra) : `level` (entier 0 à 100) et `charging` (booléen, `true` si une alimentation externe est branchée, même batterie pleine). Absent pour une caméra sur secteur ; le viewer n'affiche rien dans ce cas. Republié quand l'état de charge change, quand le niveau varie d'au moins 5 points, ou à chaque variation sous 20 %, au plus toutes les 5 minutes. |
+| `name` | string (<= 64) | Display name |
+| `online` | boolean | `false` in the Last Will |
+| `busy` | boolean | A session is active (replaces the old `streaming`) |
+| `viewer` | string or `null` | Identifier of the viewer of the current session |
+| `kind` | string | `relay` (RTSP agent) or `phone` (phone camera), informational |
+| `caps` | object (optional) | Capabilities: `video`, `audio` (lowercase codecs), `streams`, `cmds`. If absent, the viewer keeps the last known capabilities. |
+| `agent` | object (optional) | Implementation and version, informational |
+| `facing` | string (optional) | Camera used by a phone during a session: `back` (rear) or `front`. Absent outside a session or if the camera does not know; the viewer displays nothing in that case. Republished after every successful `flip`. |
+| `battery` | object (optional) | Battery of a device that has one (phone camera): `level` (integer 0 to 100) and `charging` (boolean, `true` if external power is connected, even with a full battery). Absent for a mains-powered camera; the viewer displays nothing in that case. Republished when the charging state changes, when the level changes by at least 5 points, or on every change below 20%, at most every 5 minutes. |
 
-- Le **Last Will** contient l'état complet avec `online:false` et `busy:false` (le nom est connu à la connexion).
-- **Retrait d'un appareil** : l'administrateur publie un message retained **vide** sur son `state`
-  (`mosquitto_pub -r -n`). Un viewer qui reçoit un payload vide sur un `state` retire l'appareil de sa liste.
-- Les viewers **n'annoncent pas** leur présence.
+- The **Last Will** contains the full state with `online:false` and `busy:false` (the name is known at connection time).
+- **Removing a device**: the administrator publishes an **empty** retained message on its `state`
+  (`mosquitto_pub -r -n`). A viewer that receives an empty payload on a `state` removes the device from its list.
+- Viewers **do not announce** their presence.
 
-### Configuration ICE (optionnelle)
+### ICE configuration (optional)
 
-Un message **retained** que l'administrateur publie sur `ocam/config/ice` pour que les viewers
-n'aient pas à saisir de serveurs STUN / TURN. Il est lisible par les **viewers** et par les **caméras** qui en ont
-besoin (le téléphone en mode caméra, qui est un pair WebRTC complet ; un agent comme l'agent Go n'a besoin que d'un STUN,
-configuré localement).
+A **retained** message that the administrator publishes on `ocam/config/ice` so that viewers
+do not have to enter STUN / TURN servers. It is readable by **viewers** and by the **cameras** that need
+it (the phone in camera mode, which is a full WebRTC peer; an agent such as the Go agent only needs a STUN,
+configured locally).
 
 ```json
 {
   "v": 1,
   "ts": 1760000000,
-  "stun": ["stun:turn.exemple.fr:3478"],
+  "stun": ["stun:turn.example.com:3478"],
   "turn": {
-    "urls": ["turn:turn.exemple.fr:3478?transport=udp", "turns:turn.exemple.fr:5349?transport=tcp"],
+    "urls": ["turn:turn.example.com:3478?transport=udp", "turns:turn.example.com:5349?transport=tcp"],
     "username": "1762592000:ocam",
     "credential": "base64...",
     "expires": 1762592000
@@ -154,44 +154,44 @@ configuré localement).
 }
 ```
 
-| Champ | Description |
+| Field | Description |
 |---|---|
-| `stun` | (optionnel) Liste d'URL STUN. Un STUN n'a pas d'identifiants. |
-| `turn` | (optionnel) Un serveur TURN. |
-| `turn.username`, `turn.credential` | (**optionnels**) À omettre pour un serveur sans authentification. |
-| `turn.expires` | (optionnel) Expiration des identifiants, secondes Unix ; informatif. |
+| `stun` | (optional) List of STUN URLs. A STUN has no credentials. |
+| `turn` | (optional) A TURN server. |
+| `turn.username`, `turn.credential` | (**optional**) Omit for a server without authentication. |
+| `turn.expires` | (optional) Credential expiry, Unix seconds; informational. |
 
-Ordre de priorité côté viewer pour construire ses `iceServers` :
-1. réglages saisis manuellement dans l'application (s'ils existent) ;
-2. sinon le message `ocam/config/ice` (s'il existe et est valide) ;
-3. sinon **STUN public par défaut**, sans identifiants (`stun:stun.l.google.com:19302`,
+Priority order on the viewer side to build its `iceServers`:
+1. settings entered manually in the application (if any);
+2. otherwise the `ocam/config/ice` message (if it exists and is valid);
+3. otherwise the **default public STUN**, without credentials (`stun:stun.l.google.com:19302`,
    `stun1.l.google.com:19302`).
 
-Le message est entièrement facultatif : un broker sans ce topic fonctionne normalement. Un message
-absent, vide ou invalide est ignoré. Le viewer relit la valeur retained à chaque connexion MQTT.
+The message is entirely optional: a broker without this topic works normally. A missing,
+empty or invalid message is ignored. The viewer re-reads the retained value on every MQTT connection.
 
 ## 6. Messages
 
-Tous sont publiés sur `ocam/dev/{devId}/in/{fromId}` (vers une caméra) ou
-`ocam/cli/{cliId}/in/{fromId}` (vers un viewer), avec l'enveloppe du § 4.
+All are published on `ocam/dev/{devId}/in/{fromId}` (to a camera) or
+`ocam/cli/{cliId}/in/{fromId}` (to a viewer), with the envelope from section 4.
 
-### `offer` — viewer -> caméra
+### `offer` — viewer -> camera
 ```json
 { "v":1, "ts":1760000000, "sid":"k3f9x2m1q8", "type":"offer",
   "data": { "sdp": "v=0\r\no=- ...", "want": { "stream": "sub", "audio": true } } }
 ```
 | `data` | Description |
 |---|---|
-| `sdp` | Offre SDP (le viewer reçoit : `recvonly` vidéo et audio) |
-| `want.stream` | (optionnel) Flux demandé parmi `caps.streams` ; défaut : le premier |
-| `want.audio` | (optionnel) `false` pour ne pas recevoir l'audio |
+| `sdp` | SDP offer (the viewer receives: `recvonly` video and audio) |
+| `want.stream` | (optional) Requested stream among `caps.streams`; default: the first one |
+| `want.audio` | (optional) `false` to not receive audio |
 
-### `answer` — caméra -> viewer
+### `answer` — camera -> viewer
 ```json
 { "v":1, "ts":1760000001, "sid":"k3f9x2m1q8", "type":"answer", "data": { "sdp": "v=0\r\n..." } }
 ```
 
-### `ice` — dans les deux sens
+### `ice` — in both directions
 ```json
 { "v":1, "ts":1760000002, "sid":"k3f9x2m1q8", "type":"ice",
   "data": { "candidates": [ { "candidate":"candidate:1 1 UDP 2113937151 192.168.1.10 54321 typ host",
@@ -199,133 +199,133 @@ Tous sont publiés sur `ocam/dev/{devId}/in/{fromId}` (vers une caméra) ou
 ```
 | `data` | Description |
 |---|---|
-| `candidates` | Un ou plusieurs candidats. `sdpMid` et `sdpMLineIndex` peuvent être `null` (pas d'exception à la lecture). |
-| `end` | `true` après le dernier candidat (liste éventuellement vide) |
+| `candidates` | One or more candidates. `sdpMid` and `sdpMLineIndex` may be `null` (no exception when reading). |
+| `end` | `true` after the last candidate (list possibly empty) |
 
-- Les émetteurs **regroupent** les candidats (fenêtre d'environ 100 ms) plutôt qu'un message par candidat.
-- Les récepteurs acceptent le **trickle** (candidats après l'`offer` / `answer`) comme le **non-trickle**
-  (candidats déjà dans le SDP, aucun `ice` envoyé).
+- Senders **batch** candidates (window of about 100 ms) rather than sending one message per candidate.
+- Receivers accept **trickle** (candidates after the `offer` / `answer`) as well as **non-trickle**
+  (candidates already in the SDP, no `ice` sent).
 
-### `bye` — fin de session, dans les deux sens
+### `bye` — end of session, in both directions
 ```json
 { "v":1, "ts":1760000300, "sid":"k3f9x2m1q8", "type":"bye", "data": { "reason": "user" } }
 ```
-`reason` (optionnel) : `user`, `timeout`, `ice_failed`, `source_lost`, `shutdown`.
+`reason` (optional): `user`, `timeout`, `ice_failed`, `source_lost`, `shutdown`.
 
-### `error` — caméra -> viewer
+### `error` — camera -> viewer
 ```json
 { "v":1, "ts":1760000001, "sid":"k3f9x2m1q8", "type":"error",
-  "data": { "code": "busy", "message": "session déjà active", "retryable": true } }
+  "data": { "code": "busy", "message": "session already active", "retryable": true } }
 ```
-| `code` | Signification |
+| `code` | Meaning |
 |---|---|
-| `busy` | Une session est déjà active |
-| `bad_request` | Message ou SDP invalide, flux demandé inexistant |
-| `unsupported_codec` | Aucun codec commun |
-| `source_unavailable` | Flux source (RTSP) injoignable |
-| `stale` | `ts` hors tolérance (probable problème d'horloge) |
-| `internal` | Autre erreur côté caméra |
+| `busy` | A session is already active |
+| `bad_request` | Invalid message or SDP, requested stream does not exist |
+| `unsupported_codec` | No common codec |
+| `source_unavailable` | Source stream (RTSP) unreachable |
+| `stale` | `ts` out of tolerance (probable clock problem) |
+| `internal` | Other camera-side error |
 
-Une `error` **termine** la session : elle n'est jamais suivie d'un `bye`.
+An `error` **terminates** the session: it is never followed by a `bye`.
 
-### `cmd` / `res` — commandes (hors session)
+### `cmd` / `res` — commands (outside a session)
 ```json
 { "v":1, "ts":1760000400, "type":"cmd", "data": { "id":"c-17", "name":"torch", "args": { "on": true } } }
 { "v":1, "ts":1760000401, "type":"res", "data": { "id":"c-17", "ok": true } }
 { "v":1, "ts":1760000401, "type":"res", "data": { "id":"c-18", "ok": false,
                                                  "error": { "code":"unsupported", "message":"..." } } }
 ```
-- Pas de `sid`. La commande est identifiée par `data.id` ; le `res` est publié sur la boîte du viewer.
-- Les commandes disponibles sont listées dans `caps.cmds`. Noms standard : `flip` (changer de caméra
-  d'un téléphone), `torch` (`args.on`), `video` et `audio` (`args.on` booléen : coupe ou rétablit
-  l'envoi de la vidéo ou du son de la session en cours ; réservées au viewer de cette session, sinon
-  `ok:false` / `unavailable` ; sans piste correspondante, couper répond `ok:true` et rétablir
-  `unavailable`). La piste est seulement désactivée (`enabled=false`) : la session et la capture
-  restent ouvertes, l'image devient noire et le débit tombe, la reprise est immédiate. Noms propres à une implémentation : préfixe `x-`.
-- Une commande inconnue reçoit un `res` avec `ok:false` et le code `unsupported`.
-- Délai de réponse attendu : 10 s.
-- L'ancien `flipCamera` / `toggleCamera` disparaît, remplacé par `cmd` `flip`.
+- No `sid`. The command is identified by `data.id`; the `res` is published to the viewer's inbox.
+- The available commands are listed in `caps.cmds`. Standard names: `flip` (switch a phone's
+  camera), `torch` (`args.on`), `video` and `audio` (`args.on` boolean: mutes or restores
+  sending of the current session's video or sound; reserved for the viewer of that session, otherwise
+  `ok:false` / `unavailable`; with no matching track, muting answers `ok:true` and restoring
+  `unavailable`). The track is only disabled (`enabled=false`): the session and the capture
+  stay open, the picture goes black and the bitrate drops, and resuming is immediate. Implementation-specific names: `x-` prefix.
+- An unknown command gets a `res` with `ok:false` and the code `unsupported`.
+- Expected response time: 10 s.
+- The old `flipCamera` / `toggleCamera` are removed, replaced by `cmd` `flip`.
 
-## 7. Règles de session (côté caméra)
+## 7. Session rules (camera side)
 
-La caméra est dans l'un des deux états `idle` ou `busy(sid, viewer)`.
+The camera is in one of two states: `idle` or `busy(sid, viewer)`.
 
-| Événement | En `idle` | En `busy` |
+| Event | In `idle` | In `busy` |
 |---|---|---|
-| `offer` valide | crée la session, répond `answer`, passe en `busy`, republie `state` (`busy:true`, `viewer`) | même `sid` **et** même viewer : **doublon**, renvoie la même `answer` (ou ignore) ; sinon `error busy` au viewer émetteur, **session active inchangée** |
-| `offer` invalide | `error` (`bad_request`, `unsupported_codec`, `source_unavailable`, `stale`), reste `idle` | `error busy` |
-| `ice` | ignoré | accepté **seulement** si `sid` et viewer correspondent à la session |
-| `bye` | ignoré | accepté **seulement** si `sid` et viewer correspondent ; ferme la session |
-| `cmd` | traité | traité |
+| valid `offer` | creates the session, replies `answer`, moves to `busy`, republishes `state` (`busy:true`, `viewer`) | same `sid` **and** same viewer: **duplicate**, resends the same `answer` (or ignores); otherwise `error busy` to the sending viewer, **active session unchanged** |
+| invalid `offer` | `error` (`bad_request`, `unsupported_codec`, `source_unavailable`, `stale`), stays `idle` | `error busy` |
+| `ice` | ignored | accepted **only** if `sid` and viewer match the session |
+| `bye` | ignored | accepted **only** if `sid` and viewer match; closes the session |
+| `cmd` | handled | handled |
 
-Fin de session :
-- `bye` du viewer ;
-- échec ou perte de la connexion WebRTC (état `failed`, ou `disconnected` > 10 s) : la caméra envoie
-  `bye` (`reason: ice_failed`) ;
-- aucune connexion établie dans les **30 s** après l'`answer` : `bye` (`reason: timeout`) ;
-- source RTSP perdue après les tentatives de reconnexion : `bye` (`reason: source_lost`).
+End of session:
+- `bye` from the viewer;
+- failure or loss of the WebRTC connection (state `failed`, or `disconnected` > 10 s): the camera sends
+  `bye` (`reason: ice_failed`);
+- no connection established within **30 s** after the `answer`: `bye` (`reason: timeout`);
+- RTSP source lost after reconnection attempts: `bye` (`reason: source_lost`).
 
-Après la fin : fermeture de la PeerConnection et du flux RTSP, republication de `state`
+After the end: closing of the PeerConnection and the RTSP stream, republication of `state`
 (`busy:false`, `viewer:null`).
 
-Autres règles :
-- **La perte de la connexion MQTT ne coupe pas** une session WebRTC déjà établie (la signalisation
-  n'est plus nécessaire). À la reconnexion, la caméra republie son `state` exact.
-- Le **viewer** ignore tout message dont le `sid` n'est pas celui de son appel en cours.
-- Le **viewer** envoie `bye` à la fin d'un appel ; s'il disparaît sans le faire, la caméra le détecte
-  par l'expiration de la connexion WebRTC.
-- L'ouverture du flux RTSP se fait **après** l'établissement de la connexion WebRTC (inchangé).
-- **Journal de session** (obligatoire côté caméra) : début (`sid`, viewer), fin (raison, durée).
+Other rules:
+- **Loss of the MQTT connection does not cut** an already established WebRTC session (signaling
+  is no longer needed). On reconnection, the camera republishes its exact `state`.
+- The **viewer** ignores any message whose `sid` is not that of its current call.
+- The **viewer** sends `bye` at the end of a call; if it disappears without doing so, the camera detects it
+  through the expiry of the WebRTC connection.
+- The RTSP stream is opened **after** the WebRTC connection is established (unchanged).
+- **Session log** (mandatory on the camera side): start (`sid`, viewer), end (reason, duration).
 
-## 8. Flux
+## 8. Flows
 
-### Appel nominal
+### Nominal call
 ```
-Viewer                       Broker                       Caméra
+Viewer                       Broker                       Camera
   |-- offer (sid=S) ---------->|-- ocam/dev/cam/in/cli --->|
-  |                            |                           | crée la PeerConnection
+  |                            |                           | creates the PeerConnection
   |<-- answer (sid=S) ---------|<-- ocam/cli/cli/in/cam ---|  state: busy=true, viewer=cli
-  |<-- ice (sid=S) ------------|<--------------------------|  (candidats par lots)
+  |<-- ice (sid=S) ------------|<--------------------------|  (candidates in batches)
   |-- ice (sid=S) ------------>|-------------------------->|
-  |========= connexion WebRTC établie : la caméra ouvre le RTSP =========|
+  |========= WebRTC connection established: the camera opens the RTSP =========|
   |-- bye (sid=S) ------------>|-------------------------->|  state: busy=false
 ```
 
-### Caméra occupée (second viewer)
+### Busy camera (second viewer)
 ```
-Viewer B                                                   Caméra (busy avec A)
+Viewer B                                                   Camera (busy with A)
   |-- offer (sid=T) ------------------------------------------>|
-  |<-- error (sid=T, code=busy) --------------------------------|   la session de A est inchangée
+  |<-- error (sid=T, code=busy) --------------------------------|   A's session is unchanged
 ```
 
-### Coupure d'alimentation de la caméra
+### Camera power loss
 ```
-Caméra ---X (plus de keepalive)
-Broker : publie le Last Will  ->  state { online:false, busy:false }   (retained)
-Viewers : affichent la caméra hors ligne
+Camera ---X (no more keepalive)
+Broker: publishes the Last Will  ->  state { online:false, busy:false }   (retained)
+Viewers: show the camera as offline
 ```
 
-## 9. Sécurité
+## 9. Security
 
-- **Authentification** : login / mot de passe MQTT, TLS obligatoire avec **certificat du broker validé**.
-- **Autorisation** : ACL Mosquitto **par rôle** (annexe A). Elle garantit que :
-  - un client n'écrit dans une boîte que sous son propre nom (`fromId` fiable) ;
-  - un client ne lit que sa propre boîte ;
-  - une caméra n'écrit que son propre `state`, ne lit pas les autres caméras et n'appelle personne ;
-  - un viewer ne publie jamais d'état de caméra.
-- **Ce que l'ACL ne couvre pas** : un compte *viewer* volé donne accès à toutes les caméras du serveur
-  jusqu'à sa révocation (modèle « un serveur = un cercle de confiance »). Parades : un compte par
-  viewer (révocable), mots de passe longs générés, journal de session, détection par éjection
-  (deux connexions avec le même compte -> la première est éjectée).
-- **Auto-test de l'ACL** (agent caméra, recommandé) : au démarrage, l'agent tente de s'abonner à
-  `ocam/dev/+/state` (interdit à une caméra). Si le broker **accepte** l'abonnement, l'agent journalise
-  un avertissement visible (« broker permissif : l'ACL n'est pas appliquée ») et démarre quand même.
-- Les mots de passe ne figurent **jamais** dans les journaux.
-- Le broker est la racine de confiance : l'empreinte DTLS du SDP transite par lui.
+- **Authentication**: MQTT username / password, TLS mandatory with **validated broker certificate**.
+- **Authorization**: Mosquitto **per-role** ACL (appendix A). It guarantees that:
+  - a client only writes to an inbox under its own name (reliable `fromId`);
+  - a client only reads its own inbox;
+  - a camera only writes its own `state`, does not read other cameras and calls no one;
+  - a viewer never publishes a camera state.
+- **What the ACL does not cover**: a stolen *viewer* account gives access to all cameras on the server
+  until it is revoked (the "one server = one circle of trust" model). Countermeasures: one account per
+  viewer (revocable), long generated passwords, session log, detection by ejection
+  (two connections with the same account -> the first one is ejected).
+- **ACL self-test** (camera agent, recommended): at startup, the agent tries to subscribe to
+  `ocam/dev/+/state` (forbidden for a camera). If the broker **accepts** the subscription, the agent logs
+  a visible warning ("permissive broker: the ACL is not enforced") and starts anyway.
+- Passwords **never** appear in the logs.
+- The broker is the root of trust: the SDP's DTLS fingerprint goes through it.
 
-## Annexe A — Configuration Mosquitto (login / mot de passe)
+## Appendix A — Mosquitto configuration (username / password)
 
-`/etc/mosquitto/conf.d/ocam.conf` :
+`/etc/mosquitto/conf.d/ocam.conf`:
 ```
 persistence true
 
@@ -346,19 +346,19 @@ max_queued_messages 50
 max_inflight_messages 20
 ```
 
-Création des comptes :
+Creating the accounts:
 ```bash
-mosquitto_passwd -c -b /etc/mosquitto/passwd cam-entree 'mot-de-passe-genere'   # -c : première fois seulement
-mosquitto_passwd    -b /etc/mosquitto/passwd cli-alice  'mot-de-passe-genere'
+mosquitto_passwd -c -b /etc/mosquitto/passwd cam-entree 'generated-password'   # -c: first time only
+mosquitto_passwd    -b /etc/mosquitto/passwd cli-alice  'generated-password'
 ```
 
-`/etc/mosquitto/acl` (un bloc par compte ; un script de provisionnement pourra les générer) :
+`/etc/mosquitto/acl` (one block per account; a provisioning script can generate them):
 ```
-# administrateur : supervision et nettoyage des états retained
+# administrator: monitoring and cleanup of retained states
 user admin
 topic readwrite ocam/#
 
-# caméra
+# camera
 user cam-entree
 topic write ocam/dev/cam-entree/state
 topic read  ocam/dev/cam-entree/in/#
@@ -373,57 +373,57 @@ topic read  ocam/config/ice
 topic write ocam/dev/+/in/cli-alice
 ```
 
-Rechargement après modification : `kill -HUP $(pidof mosquitto)` (ou `systemctl reload mosquitto`).
+Reload after a change: `kill -HUP $(pidof mosquitto)` (or `systemctl reload mosquitto`).
 
-### Vérifications (à refaire à chaque changement d'ACL)
-Avec l'ACL active, les résultats attendus sont :
+### Checks (to redo on every ACL change)
+With the ACL active, the expected results are:
 ```bash
-# 1. alice ne peut pas écrire sous le nom de bob : le message n'arrive pas (le broker l'ignore sans erreur)
+# 1. alice cannot write under bob's name: the message does not arrive (the broker ignores it without error)
 mosquitto_sub -h broker -p 8883 --cafile ca.crt -u cam-entree -P ... -t 'ocam/dev/cam-entree/in/#' -v &
-mosquitto_pub -h broker -p 8883 --cafile ca.crt -u cli-alice -P ... -t ocam/dev/cam-entree/in/bob   -m x   # NE doit PAS apparaître
-mosquitto_pub -h broker -p 8883 --cafile ca.crt -u cli-alice -P ... -t ocam/dev/cam-entree/in/cli-alice -m x   # doit apparaître
+mosquitto_pub -h broker -p 8883 --cafile ca.crt -u cli-alice -P ... -t ocam/dev/cam-entree/in/bob   -m x   # must NOT appear
+mosquitto_pub -h broker -p 8883 --cafile ca.crt -u cli-alice -P ... -t ocam/dev/cam-entree/in/cli-alice -m x   # must appear
 
-# 2. une caméra ne peut pas lire les autres : l'abonnement est refusé (code 128 dans le SUBACK)
+# 2. a camera cannot read the others: the subscription is refused (code 128 in the SUBACK)
 mosquitto_sub -h broker -p 8883 --cafile ca.crt -u cam-entree -P ... -t 'ocam/dev/+/state' -d
 
-# 3. un viewer ne peut pas publier l'état d'une caméra : le message n'est pas stocké
+# 3. a viewer cannot publish a camera's state: the message is not stored
 mosquitto_pub -h broker -p 8883 --cafile ca.crt -u cli-alice -P ... -t ocam/dev/cam-entree/state -r -m '{}'
 ```
-**Sans ACL** (phase de test), les trois commandes réussissent : c'est l'indicateur que l'ACL n'est pas appliquée.
+**Without an ACL** (test phase), all three commands succeed: that is the indicator that the ACL is not enforced.
 
-## Annexe B — Exposition sur Internet (checklist)
+## Appendix B — Internet exposure (checklist)
 
-- [ ] Listener TLS seul (8883), **pas de listener 1883** en clair
-- [ ] `allow_anonymous false`, mots de passe générés d'au moins 20 caractères, un compte par appareil et par utilisateur
-- [ ] Certificat serveur valide (le nom DNS correspond), CA épinglé dans l'agent et dans l'application
-- [ ] Limites de ressources : `message_size_limit`, `max_connections`, `max_queued_messages`, `max_inflight_messages`
-- [ ] fail2ban (ou équivalent) sur les échecs d'authentification : Mosquitto n'a pas de verrouillage de compte natif
-- [ ] Journalisation des connexions et des échecs d'authentification
-- [ ] Mosquitto à jour
-- [ ] ACL par rôle active et vérifiée (annexe A)
-- [ ] Procédure de révocation : retirer le compte de `passwd` et de `acl`, recharger, vérifier la déconnexion
+- [ ] TLS-only listener (8883), **no plaintext listener on 1883**
+- [ ] `allow_anonymous false`, generated passwords of at least 20 characters, one account per device and per user
+- [ ] Valid server certificate (the DNS name matches), CA pinned in the agent and in the application
+- [ ] Resource limits: `message_size_limit`, `max_connections`, `max_queued_messages`, `max_inflight_messages`
+- [ ] fail2ban (or equivalent) on authentication failures: Mosquitto has no native account lockout
+- [ ] Logging of connections and authentication failures
+- [ ] Mosquitto up to date
+- [ ] Per-role ACL active and verified (appendix A)
+- [ ] Revocation procedure: remove the account from `passwd` and `acl`, reload, verify the disconnection
 
-## Annexe C — Évolution : authentification par certificat client (mTLS)
+## Appendix C — Evolution: client certificate authentication (mTLS)
 
-Prévue après la première version. Elle ne change **pas** le protocole : le CN du certificat client
-remplace le nom d'utilisateur (`require_certificate true`, `use_identity_as_username true`), les blocs
-`user` de l'ACL portent les mêmes CN, et les topics, messages et règles de session restent identiques.
-Clés ECDSA P-256 recommandées (génération rapide sur CPU faible). Détails : à écrire lors de la mise en œuvre.
+Planned after the first version. It does **not** change the protocol: the client certificate's CN
+replaces the username (`require_certificate true`, `use_identity_as_username true`), the ACL `user`
+blocks carry the same CNs, and the topics, messages and session rules remain identical.
+ECDSA P-256 keys recommended (fast generation on a low-power CPU). Details: to be written during implementation.
 
-## Annexe D — Changements par rapport à l'ancien protocole
+## Appendix D — Changes from the old protocol
 
-| Ancien | Nouveau |
+| Old | New |
 |---|---|
 | Topics `/devices`, `/{clientID}` | `ocam/dev/{id}/state`, `ocam/dev/{id}/in/{from}`, `ocam/cli/{id}/in/{from}` |
-| Retained partagé sur `/devices` (un seul message conservé pour tous) | Un `state` retained **par caméra** + Last Will |
-| `query` + réponses de tous les devices | Supprimé : état reçu à l'abonnement |
-| `source` dans le payload (falsifiable) | Expéditeur = dernier niveau du topic (garanti par l'ACL) |
-| `sdp` avec `data.type` offer/answer | Types distincts `offer` / `answer` |
-| Pas de session, `hangup` global | `sid`, `bye` rattaché à la session et au viewer |
-| `error` suivi d'un `hangup` | `error` avec code, qui termine la session seul |
-| Un message `ice` par candidat | Candidats regroupés, `end` |
-| `streaming` booléen | `busy` + `viewer` |
-| Type `sender` / `smartphone` | `kind` (`relay` / `phone`), rôle défini par l'ACL |
+| Shared retained message on `/devices` (a single message kept for everyone) | One retained `state` **per camera** + Last Will |
+| `query` + responses from all devices | Removed: state received on subscription |
+| `source` in the payload (forgeable) | Sender = last level of the topic (guaranteed by the ACL) |
+| `sdp` with `data.type` offer/answer | Distinct `offer` / `answer` types |
+| No session, global `hangup` | `sid`, `bye` tied to the session and the viewer |
+| `error` followed by a `hangup` | `error` with a code, which terminates the session on its own |
+| One `ice` message per candidate | Batched candidates, `end` |
+| `streaming` boolean | `busy` + `viewer` |
+| `sender` / `smartphone` type | `kind` (`relay` / `phone`), role defined by the ACL |
 | `flipCamera`, `toggleCamera` | `cmd` / `res` |
-| Id de l'agent = MD5 de l'URL RTSP | Id = nom d'utilisateur MQTT |
-| STUN Google codé en dur, aucune configuration | Configuration ICE optionnelle (`ocam/config/ice`), STUN public par défaut |
+| Agent id = MD5 of the RTSP URL | Id = MQTT username |
+| Hard-coded Google STUN, no configuration | Optional ICE configuration (`ocam/config/ice`), default public STUN |

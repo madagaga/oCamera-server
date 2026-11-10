@@ -1,93 +1,93 @@
-# Serveur oCamera : Mosquitto + STUN / TURN (Docker)
+# oCamera server: Mosquitto + STUN / TURN (Docker)
 
-Un `docker compose` qui monte tout ce dont les caméras et les viewers ont besoin côté serveur :
+A `docker compose` stack with everything the cameras and viewers need on the server side:
 
-| Service | Rôle | Ports |
+| Service | Role | Ports |
 |---|---|---|
-| `mosquitto` | Signalisation MQTT 3.1.1 en TLS, login / mot de passe, ACL par rôle ([MQTT_PROTOCOL.md](docs/MQTT_PROTOCOL.md), annexe A) | 8883/tcp |
-| `coturn` | STUN + TURN (identifiants temporaires), voir [STUN_TURN.md](docs/STUN_TURN.md) | 3478 udp+tcp, 5349 tcp (TLS), 49152-49252 udp |
-| `ice-publisher` | Publie chaque jour les identifiants TURN sur `ocam/config/ice` (retained). Viewers **et caméras** la lisent | — |
+| `mosquitto` | MQTT 3.1.1 signaling over TLS, login / password, role-based ACL ([MQTT_PROTOCOL.md](docs/MQTT_PROTOCOL.md), appendix A) | 8883/tcp |
+| `coturn` | STUN + TURN (temporary credentials), see [STUN_TURN.md](docs/STUN_TURN.md) | 3478 udp+tcp, 5349 tcp (TLS), 49152-49252 udp |
+| `ice-publisher` | Publishes the TURN credentials on `ocam/config/ice` (retained) every day. Viewers **and camera phones** read it | n/a |
 
-Cible : un serveur **Linux** avec une IP publique. `coturn` utilise le réseau de l'hôte (`network_mode: host`) : il
-ne fonctionne donc pas sous Docker Desktop (Windows / macOS), seulement pour les tests de syntaxe.
+Target: a **Linux** server with a public IP. `coturn` uses the host network (`network_mode: host`), so it does
+not work on Docker Desktop (Windows / macOS), except for syntax checks.
 
-## Prérequis
+## Requirements
 
-- Docker et Docker Compose v2.
-- Deux noms DNS pointant sur le serveur (ils peuvent être identiques) : `MQTT_HOST` et `TURN_HOST`.
-- Un certificat TLS valide pour ces noms (Let's Encrypt par exemple), copié dans `./certs/` :
+- Docker and Docker Compose v2.
+- Two DNS names pointing to the server (they can be the same): `MQTT_HOST` and `TURN_HOST`.
+- A valid TLS certificate for these names (Let's Encrypt for instance), copied to `./certs/`:
   - `certs/fullchain.pem`
   - `certs/privkey.pem`
-- Pare-feu ouvert : 8883/tcp, 3478/udp+tcp, 5349/tcp, 49152-49252/udp.
+- Firewall open: 8883/tcp, 3478/udp+tcp, 5349/tcp, 49152-49252/udp.
 
-## Démarrage
+## Getting started
 
 ```bash
-cp .env.example .env          # puis éditer : noms DNS, IP publique, secrets
-openssl rand -hex 32          # à coller dans TURN_SECRET
+cp .env.example .env          # then edit: DNS names, public IP, secrets
+openssl rand -hex 32          # paste the result into TURN_SECRET
 
-./scripts/init.sh             # crée le compte admin et l'ACL
+./scripts/init.sh             # creates the admin account and the ACL
 docker compose up -d --build
 docker compose logs -f
 ```
 
-Les scripts sont en bash (`bash scripts/init.sh` si le bit exécutable manque).
+The scripts are bash (`bash scripts/init.sh` if the executable bit is missing).
 
-### Droits sur les certificats
+### Certificate permissions
 
-Mosquitto (uid 1883) et coturn lisent les fichiers de `./certs`. Avec Let's Encrypt, un *deploy hook* de certbot
-qui copie les fichiers puis les rend lisibles suffit, par exemple :
+Mosquitto (uid 1883) and coturn read the files in `./certs`. With Let's Encrypt, a certbot *deploy hook* that
+copies the files and makes them readable is enough, for example:
 
 ```bash
-cp /etc/letsencrypt/live/$DOMAINE/{fullchain,privkey}.pem ./certs/
+cp /etc/letsencrypt/live/$DOMAIN/{fullchain,privkey}.pem ./certs/
 chmod 644 ./certs/fullchain.pem
 chmod 640 ./certs/privkey.pem && chown root:1883 ./certs/privkey.pem
-docker compose restart mosquitto coturn   # après chaque renouvellement
+docker compose restart mosquitto coturn   # after every renewal
 ```
 
-Si coturn ne peut pas lire la clé (utilisateur différent), il désactive le TLS : vérifier dans ses logs.
+If coturn cannot read the key (different user), it disables TLS: check its logs.
 
-## Comptes MQTT
+## MQTT accounts
 
 ```bash
-./scripts/user.sh add cam-entree camera   # agent Go / C ou téléphone caméra seul
-./scripts/user.sh add alice viewer        # viewer seul
-./scripts/user.sh add tel-jardin phone    # l'app Flutter : caméra + viewer avec le même compte
+./scripts/user.sh add cam-entrance camera   # Go / C agent, or a phone used only as a camera
+./scripts/user.sh add alice viewer          # viewer only
+./scripts/user.sh add garden-phone phone    # the Flutter app: camera + viewer with the same account
 ./scripts/user.sh remove alice
 ```
 
-Le script écrit le mot de passe (haché) et le bloc d'ACL du compte, puis recharge Mosquitto. Chaque bloc donne aussi
-la **lecture de `ocam/config/ice`** : le téléphone en mode caméra en a besoin pour recevoir le TURN
-(voir le [protocole](docs/MQTT_PROTOCOL.md), § 5).
+The script writes the (hashed) password and the account's ACL block, then reloads Mosquitto. Every block also grants
+**read access to `ocam/config/ice`**: a phone in camera mode needs it to receive the TURN server
+(see the [protocol](docs/MQTT_PROTOCOL.md), section 5).
 
-Un rechargement ne déconnecte pas un client déjà connecté : après un `remove`, redémarrer Mosquitto
-(`docker compose restart mosquitto`) pour couper la session en cours.
+A reload does not disconnect a client that is already connected: after a `remove`, restart Mosquitto
+(`docker compose restart mosquitto`) to cut the running session.
 
-## Vérifications
+## Verification
 
 ```bash
-# ICE publié ? (doit renvoyer le JSON avec stun / turn)
+# ICE published? (must return the JSON with stun / turn)
 docker compose exec mosquitto mosquitto_sub -h localhost -p 8883 \
   --cafile /mosquitto/certs/fullchain.pem -u admin -P "$MQTT_ADMIN_PASSWORD" -t ocam/config/ice -C 1
 ```
 
-Les contrôles d'ACL de l'annexe A du protocole (alice qui écrit sous un autre nom, une caméra qui lit les autres, etc.)
-restent à refaire après chaque changement.
+The ACL checks of appendix A of the protocol (alice writing under another name, a camera reading the others, etc.)
+must be repeated after every change.
 
-- STUN : `turnutils_stunclient $TURN_HOST` renvoie l'adresse publique de l'appelant.
-- TURN : dans l'app, le badge de la vue live affiche `Relayed` quand le relais est utilisé. Logs de l'app :
-  `[MQTT] : ICE config 2 server entries` côté viewer **et** caméra.
-- Test à faire depuis un viewer en 4G/5G, avec et sans TURN.
+- STUN: `turnutils_stunclient $TURN_HOST` returns the public address of the caller.
+- TURN: in the app, the badge of the live view shows `Relayed` when the relay is used. App logs:
+  `[MQTT] : ICE config 2 server entries` on the viewer **and** on the camera.
+- Test from a viewer on 4G/5G, with and without TURN.
 
-## Certificat auto-signé (réseau local, tests)
+## Self-signed certificate (local network, tests)
 
-Placer `fullchain.pem`, `privkey.pem` et la CA (`ca.crt`) dans `./certs`, puis mettre `MQTT_CAFILE=/certs/ca.crt`
-dans `.env` pour le publisher. Les apps valident le certificat : il faut installer la CA sur les téléphones.
+Put `fullchain.pem`, `privkey.pem` and the CA (`ca.crt`) in `./certs`, then set `MQTT_CAFILE=/certs/ca.crt`
+in `.env` for the publisher. The apps validate the certificate: the CA must be installed on the phones.
 
 ## Notes
 
-- `--denied-peer-ip` : coturn refuse de relayer vers les réseaux privés. Si le serveur est sur **le même réseau
-  local** que les caméras, adapter ces lignes dans `docker-compose.yml`.
-- Si le serveur est derrière un NAT, mettre `IP_PUBLIQUE/IP_PRIVEE` dans `EXTERNAL_IP` et rediriger les ports ci-dessus.
-- Les identifiants TURN durent 30 jours et sont republiés chaque jour : rien à renouveler à la main.
-- `mosquitto/config/` (mots de passe, ACL), `certs/` et `.env` ne sont jamais versionnés (`.gitignore`).
+- `--denied-peer-ip`: coturn refuses to relay towards private networks. If the server is on **the same local
+  network** as the cameras, adjust these lines in `docker-compose.yml`.
+- If the server is behind a NAT, put `PUBLIC_IP/PRIVATE_IP` in `EXTERNAL_IP` and forward the ports above.
+- The TURN credentials last 30 days and are republished every day: nothing to renew by hand.
+- `mosquitto/config/` (passwords, ACL), `certs/` and `.env` are never versioned (`.gitignore`).

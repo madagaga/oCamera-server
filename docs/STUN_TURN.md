@@ -1,59 +1,62 @@
-# STUN / TURN — déploiement avec coturn (optionnel)
+# STUN / TURN: deployment with coturn (optional)
 
-**Tout est optionnel.** Sans rien installer ni configurer, les clients utilisent le STUN public de Google :
-c'est un STUN **sans mot de passe** (Google ne propose pas de TURN public). Cela suffit tant que les
-connexions directes réussissent.
+**Everything here is optional.** With nothing installed or configured, the clients use Google's public STUN:
+it is a STUN **without a password** (Google does not offer a public TURN). That is enough as long as
+direct connections succeed.
 
-coturn fait **STUN et TURN** : un seul service si vous décidez d'héberger les vôtres.
+coturn does **both STUN and TURN**: a single service if you decide to host your own.
 
-## Trois niveaux
+The `docker-compose.yml` of this repository runs coturn and publishes the credentials for you (see the
+[README](../README.md)); this document explains the choices behind it.
 
-| Niveau | Ce qu'on installe | Identifiants | Quand |
+## Three levels
+
+| Level | What you install | Credentials | When |
 |---|---|---|---|
-| **0 — par défaut** | Rien | Aucun | Début ; les viewers en 4G/5G réussissent |
-| **1 — STUN à soi** | coturn (STUN seul, sans compte) | Aucun | Ne plus dépendre de Google |
-| **2 — STUN + TURN** | coturn avec relais | **Identifiants temporaires, publiés par MQTT** (voir ci-dessous) | Un viewer mobile échoue en connexion directe (NAT symétrique / CGNAT) |
+| **0: default** | Nothing | None | To start; viewers on 4G/5G succeed |
+| **1: your own STUN** | coturn (STUN only, no account) | None | Stop depending on Google |
+| **2: STUN + TURN** | coturn with relay | **Temporary credentials, published over MQTT** (see below) | A mobile viewer fails to connect directly (symmetric NAT / CGNAT) |
 
-Le message MQTT `ocam/config/ice` (`MQTT_PROTOCOL.md`, § 5) est **facultatif** et `username` /
-`credential` y sont facultatifs : un STUN seul, ou un serveur sans authentification, se décrit sans eux.
+The MQTT message `ocam/config/ice` (`MQTT_PROTOCOL.md`, section 5) is **optional** and its `username` /
+`credential` are optional too: a STUN-only server, or a server without authentication, is described without them.
 
-## Qui a besoin de quoi
+## Who needs what
 
-| Composant | STUN | TURN |
+| Component | STUN | TURN |
 |---|---|---|
-| Agent caméra (Go / C) | oui, URL **configurable** (`ice.stun`, défaut Google) | **non** (l'agent envoie vers l'adresse de relais du viewer comme vers n'importe quel candidat) |
-| Viewer Flutter | oui | oui, si configuré |
+| Camera agent (Go / C) | yes, **configurable** URL (`ice.stun`, default Google) | **no** (the agent sends to the viewer's relay address like to any other candidate) |
+| Phone in camera mode | yes | yes, if configured (`ocam/config/ice`) |
+| Flutter viewer | yes | yes, if configured |
 
-Côté viewer, la priorité est : réglages saisis à la main > message `ocam/config/ice` > STUN Google par défaut.
+On the viewer side, the priority is: settings typed by hand > `ocam/config/ice` message > default Google STUN.
 
-## Niveau 1 — STUN seul (sans compte)
+## Level 1: STUN only (no account)
 
-Le STUN de coturn est ouvert (il ne relaie rien). Un fichier de configuration minimal :
+coturn's STUN is open (it relays nothing). A minimal configuration file:
 
 ```
 listening-port=3478
-external-ip=IP_PUBLIQUE
+external-ip=PUBLIC_IP
 fingerprint
-no-tcp-relay        # pas de TURN : aucune ressource de relais
+no-tcp-relay        # no TURN: no relay resources
 ```
-Pare-feu : UDP 3478 (et TCP 3478). Aucun identifiant à créer.
+Firewall: UDP 3478 (and TCP 3478). No credentials to create.
 
-## Niveau 2 — STUN + TURN avec identifiants temporaires
+## Level 2: STUN + TURN with temporary credentials
 
-Pas de liste de comptes dans coturn : un **secret partagé** sert à calculer des identifiants à durée
-limitée. Il n'y a donc **rien à dupliquer avec Mosquitto** : retirer un utilisateur ne touche que
-Mosquitto.
+There is no list of accounts in coturn: a **shared secret** is used to compute time-limited credentials.
+There is therefore **nothing to duplicate with Mosquitto**: removing a user only touches Mosquitto.
 
-`/etc/turnserver.conf` :
+`/etc/turnserver.conf`:
 ```
 listening-port=3478
 tls-listening-port=5349
-external-ip=IP_PUBLIQUE            # ou IP_PUBLIQUE/IP_PRIVEE si le serveur est derrière un NAT
-realm=turn.exemple.fr
+external-ip=PUBLIC_IP            # or PUBLIC_IP/PRIVATE_IP if the server is behind a NAT
+realm=turn.example.com
 fingerprint
 
 use-auth-secret
-static-auth-secret=SECRET_LONG_GENERE
+static-auth-secret=LONG_GENERATED_SECRET
 
 min-port=49152
 max-port=49252
@@ -66,27 +69,28 @@ total-quota=50
 no-multicast-peers
 no-cli
 
-# ne pas relayer vers les réseaux privés (protège le réseau du serveur)
+# do not relay towards private networks (protects the server's network)
 denied-peer-ip=10.0.0.0-10.255.255.255
 denied-peer-ip=172.16.0.0-172.31.255.255
 denied-peer-ip=192.168.0.0-192.168.255.255
 ```
-- `denied-peer-ip` : si coturn est sur **le même réseau local** que les caméras, ajuster ou retirer ces lignes.
-- La combinaison `use-auth-secret` / `static-auth-secret` est à valider sur votre version de coturn
-  avec `turnutils_uclient` (voir « Vérification »).
+- `denied-peer-ip`: if coturn is on **the same local network** as the cameras, adjust or remove these lines.
+- The `use-auth-secret` / `static-auth-secret` combination should be validated on your coturn version
+  with `turnutils_uclient` (see "Verification").
 
-### Publication des identifiants par MQTT
+### Publishing the credentials over MQTT
 
-Un script exécuté **une fois par jour** (cron) sur le serveur calcule les identifiants (valables
-30 jours) et les publie en retained : il en reste donc toujours au moins 29 jours, et une fuite expire seule.
+A script run **once a day** (cron) computes the credentials (valid 30 days) and publishes them as retained:
+at least 29 days always remain, and a leaked copy expires by itself. In this repository the `ice-publisher`
+service does exactly this.
 
-`/usr/local/bin/ocam-publish-ice` :
+`/usr/local/bin/ocam-publish-ice`:
 ```bash
 #!/bin/sh
-# Variables : SECRET = static-auth-secret de coturn ; mot de passe admin dans un fichier chmod 600
-SECRET='SECRET_LONG_GENERE'
-HOST='turn.exemple.fr'
-BROKER='mqtt.exemple.fr'
+# Variables: SECRET = coturn's static-auth-secret; admin password in a chmod 600 file
+SECRET='LONG_GENERATED_SECRET'
+HOST='turn.example.com'
+BROKER='mqtt.example.com'
 NOW=$(date +%s)
 EXP=$((NOW + 30*24*3600))
 USERNAME="$EXP:ocam"
@@ -101,32 +105,31 @@ mosquitto_pub -h "$BROKER" -p 8883 --cafile /etc/mosquitto/certs/ca.crt \
 0 4 * * * /usr/local/bin/ocam-publish-ice
 ```
 
-Pour un **STUN seul** (niveau 1), le même script publie sans le bloc `turn` (ou on publie le JSON à la main une fois).
+For a **STUN only** setup (level 1), the same script publishes without the `turn` block (or publish the JSON by hand once).
 
-## Pare-feu à ouvrir
+## Firewall ports to open
 
-| Port | Protocole | Usage | Niveau |
+| Port | Protocol | Use | Level |
 |---|---|---|---|
-| 3478 | UDP et TCP | STUN / TURN | 1 et 2 |
-| 5349 | TCP (et UDP) | TURN sur TLS (traverse les réseaux restrictifs) | 2 |
-| 49152-49252 | UDP | Relais média | 2 |
+| 3478 | UDP and TCP | STUN / TURN | 1 and 2 |
+| 5349 | TCP (and UDP) | TURN over TLS (crosses restrictive networks) | 2 |
+| 49152-49252 | UDP | Media relay | 2 |
 
-## Configuration des clients
+## Client configuration
 
-**Agent** (un seul paramètre, optionnel) :
+**Agent** (one optional parameter):
 ```yaml
 ice:
-  stun: "stun:turn.exemple.fr:3478"   # défaut si absent : STUN public Google
+  stun: "stun:turn.example.com:3478"   # default if absent: Google public STUN
 ```
 
-**Viewer** : rien à saisir si `ocam/config/ice` est publié. Sinon, STUN Google par défaut ; les URLs et
-identifiants éventuels se saisissent dans les réglages avancés de l'application (priorité sur le reste).
+**Viewer and camera phone**: nothing to enter if `ocam/config/ice` is published. Otherwise, Google STUN by default.
 
-## Vérification
-- STUN : `turnutils_stunclient turn.exemple.fr` doit renvoyer l'adresse publique de la machine appelante.
-- TURN : générer un couple temporaire avec le script ci-dessus puis
-  `turnutils_uclient -u "<username>" -w "<credential>" turn.exemple.fr` doit réussir une allocation.
-- Lecture de la config : `mosquitto_sub -t ocam/config/ice -C 1 ...` doit renvoyer le message retained.
-- En usage réel : l'écran de diagnostic `getStats()` du viewer doit montrer le type de candidat
-  sélectionné. `relay` = le TURN est utilisé ; `srflx` ou `host` = connexion directe.
-- Test à faire depuis un viewer en 4G/5G, avec plusieurs opérateurs si possible, **avec** et **sans** TURN.
+## Verification
+- STUN: `turnutils_stunclient turn.example.com` must return the public address of the calling machine.
+- TURN: generate a temporary pair with the script above, then
+  `turnutils_uclient -u "<username>" -w "<credential>" turn.example.com` must complete an allocation.
+- Reading the config: `mosquitto_sub -t ocam/config/ice -C 1 ...` must return the retained message.
+- In real use: the viewer's `getStats()` diagnostic screen must show the selected candidate type.
+  `relay` = the TURN is used; `srflx` or `host` = direct connection.
+- Test from a viewer on 4G/5G, with several carriers if possible, **with** and **without** TURN.
