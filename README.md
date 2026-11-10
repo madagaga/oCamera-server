@@ -4,8 +4,8 @@ Un `docker compose` qui monte tout ce dont les caméras et les viewers ont besoi
 
 | Service | Rôle | Ports |
 |---|---|---|
-| `mosquitto` | Signalisation MQTT 3.1.1 en TLS, login / mot de passe, ACL par rôle ([MQTT_PROTOCOL.md](../MQTT_PROTOCOL.md), annexe A) | 8883/tcp |
-| `coturn` | STUN + TURN (identifiants temporaires), voir [STUN_TURN.md](../STUN_TURN.md) | 3478 udp+tcp, 5349 tcp (TLS), 49152-49252 udp |
+| `mosquitto` | Signalisation MQTT 3.1.1 en TLS, login / mot de passe, ACL par rôle ([MQTT_PROTOCOL.md](docs/MQTT_PROTOCOL.md), annexe A) | 8883/tcp |
+| `coturn` | STUN + TURN (identifiants temporaires), voir [STUN_TURN.md](docs/STUN_TURN.md) | 3478 udp+tcp, 5349 tcp (TLS), 49152-49252 udp |
 | `ice-publisher` | Publie chaque jour les identifiants TURN sur `ocam/config/ice` (retained). Viewers **et caméras** la lisent | — |
 
 Cible : un serveur **Linux** avec une IP publique. `coturn` utilise le réseau de l'hôte (`network_mode: host`) : il
@@ -57,8 +57,8 @@ Si coturn ne peut pas lire la clé (utilisateur différent), il désactive le TL
 ```
 
 Le script écrit le mot de passe (haché) et le bloc d'ACL du compte, puis recharge Mosquitto. Chaque bloc donne aussi
-la **lecture de `ocam/config/ice`** : une caméra en a besoin pour recevoir le TURN (le [protocole](../MQTT_PROTOCOL.md)
-la réservait aux viewers, mais le téléphone caméra la lit maintenant).
+la **lecture de `ocam/config/ice`** : le téléphone en mode caméra en a besoin pour recevoir le TURN
+(voir le [protocole](docs/MQTT_PROTOCOL.md), § 5).
 
 Un rechargement ne déconnecte pas un client déjà connecté : après un `remove`, redémarrer Mosquitto
 (`docker compose restart mosquitto`) pour couper la session en cours.
