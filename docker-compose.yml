@@ -1,0 +1,74 @@
+# oCamera server: Mosquitto (signaling) + coturn (STUN / TURN) + a small job that
+# publishes the temporary TURN credentials on ocam/config/ice.
+#
+# Target: a Linux host with a public IP. coturn uses the host network (a relay
+# needs a whole UDP port range; host networking is the reliable way to get it,
+# and it does not work on Docker Desktop for Windows / macOS).
+#
+#   cp .env.example .env   # then edit it
+#   ./scripts/init.sh      # creates the `admin` account and the ACL
+#   docker compose up -d
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "8883:8883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/config:/mosquitto/config/ocam # passwd + acl (created by init.sh)
+      - ./certs:/mosquitto/certs:ro
+      - mosquitto-data:/mosquitto/data
+
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./certs:/certs:ro
+    command:
+      - --no-cli
+      - --fingerprint
+      - --log-file=stdout
+      - --listening-port=3478
+      - --tls-listening-port=5349
+      - --realm=${TURN_HOST}
+      - --external-ip=${EXTERNAL_IP}
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET}
+      - --min-port=${TURN_MIN_PORT:-49152}
+      - --max-port=${TURN_MAX_PORT:-49252}
+      - --cert=/certs/fullchain.pem
+      - --pkey=/certs/privkey.pem
+      - --user-quota=4
+      - --total-quota=50
+      - --no-multicast-peers
+      # Do not relay towards private networks (protects the server's LAN).
+      # If the cameras are on the same LAN as this server, adjust or remove them.
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+
+  ice-publisher:
+    build: ./ice-publisher
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+    environment:
+      MQTT_HOST: ${MQTT_HOST}
+      MQTT_PORT: "8883"
+      MQTT_ADMIN_PASSWORD: ${MQTT_ADMIN_PASSWORD}
+      TURN_HOST: ${TURN_HOST}
+      TURN_SECRET: ${TURN_SECRET}
+      # Only for a self-signed broker certificate (CA file mounted below).
+      MQTT_CAFILE: ${MQTT_CAFILE:-}
+    volumes:
+      - ./certs:/certs:ro
+    # The public name of the broker must resolve to this host so that the TLS
+    # certificate is validated like a real client would.
+    extra_hosts:
+      - "${MQTT_HOST}:host-gateway"
+
+volumes:
+  mosquitto-data:
